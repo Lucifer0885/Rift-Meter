@@ -1,0 +1,34 @@
+# Private research material: stays local, never published.
+# Captures are large and can hold names, chat, login data and your IP.
+/captures/
+/tools/
+/PROTOCOL_NOTES.md
+*.pcap
+*.pcapng
+*.jsonl
+
+# Build output and dependencies (app/.gitignore covers these too)
+node_modules/
+dist/
+app/src-tauri/target/
+app/src-tauri/gen/schemas/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Logs
+*.log
+
+# Editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local Claude Code settings
+.claude/settings.local.json

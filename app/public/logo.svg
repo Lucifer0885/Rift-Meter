@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Riftmeter: three rising damage bars split by a glowing rift. -->
+  <defs>
+    <linearGradient id="rm-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1b2030"/>
+      <stop offset="1" stop-color="#0c0e14"/>
+    </linearGradient>
+    <linearGradient id="rm-bar" x1="0" y1="52" x2="0" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f6fd6"/>
+      <stop offset="1" stop-color="#7fb2ff"/>
+    </linearGradient>
+    <linearGradient id="rm-rift" x1="44" y1="6" x2="24" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffe7a3"/>
+      <stop offset="0.45" stop-color="#f2c14e"/>
+      <stop offset="1" stop-color="#e2647a"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#rm-bg)"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="13.25" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1.5"/>
+  <!-- bars -->
+  <rect x="13" y="36" width="9" height="16" rx="2" fill="url(#rm-bar)"/>
+  <rect x="27.5" y="26" width="9" height="26" rx="2" fill="url(#rm-bar)"/>
+  <rect x="42" y="14" width="9" height="38" rx="2" fill="url(#rm-bar)"/>
+  <!-- rift: a bolt striking through the bars -->
+  <path d="M39 7 L48 7 L41 24 L47.5 24 L24 57 L30.5 34 L24 34 Z"
+        fill="url(#rm-rift)" stroke="#0c0e14" stroke-width="2.5" stroke-linejoin="round"/>
+</svg>

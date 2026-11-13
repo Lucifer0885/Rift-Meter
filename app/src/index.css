@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --color-crit: #f2c14e;
+  --color-me: #4e8ff2;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* The main window is dark; the overlay window stays transparent around its card. */
+html.main body {
+  background: #0f1115;
+  color: #e6e6e6;
+}
+
+html.overlay,
+html.overlay body {
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Thin dark scrollbars everywhere (WebView2 is Chromium). The standard scrollbar-color /
+   scrollbar-width properties are left unset on purpose: in Chromium they override these. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.12);
+  border-radius: 999px;
+  /* Transparent border + padding-box clip = a slim pill with space around it. */
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  min-height: 32px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(255 255 255 / 0.24);
+}
+::-webkit-scrollbar-thumb:active {
+  background-color: rgb(78 143 242 / 0.6);
+}
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
