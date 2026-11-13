@@ -65,7 +65,7 @@ function ElementBar({
 }) {
   if (elements.length === 0 || total <= 0) return null;
   return (
-    <div className="absolute inset-x-0 bottom-0 flex h-[3px]">
+    <div className="absolute inset-x-0 bottom-0 flex h-0.75">
       {elements.map((e) => (
         <div
           key={e.name}
@@ -182,7 +182,7 @@ function BarRow({
     <div
       onMouseDown={onClick ? noDrag : undefined}
       onClick={onClick}
-      className={`relative h-6 overflow-hidden rounded bg-white/[0.04] text-xs ${
+      className={`relative h-6 overflow-hidden rounded bg-white/4 text-xs ${
         onClick ? "cursor-pointer hover:bg-white/10" : ""
       } ${highlight ? "ring-1 ring-white/45 ring-inset" : ""}`}
     >
@@ -509,7 +509,7 @@ function ClassIcon({ cls, level }: { cls: string; level?: number | null }) {
   }
   const tag = cls.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   return (
-    <span title={title} className="shrink-0 rounded bg-white/10 px-1 text-[9px] leading-[14px] font-bold text-zinc-300">
+    <span title={title} className="shrink-0 rounded bg-white/10 px-1 text-[9px] leading-3.5 font-bold text-zinc-300">
       {tag}
     </span>
   );

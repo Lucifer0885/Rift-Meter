@@ -1,6 +1,6 @@
 //! Encounter bookkeeping: totals, DPS and crit rate per attacker, mob types, history.
 
-use crate::decode::{Hit, PlayerInfo, RelayedCast, Spawn, skill_class, TALENT_PROCS, effect_skills, mercenary_name, skill_element, pretty_name, rank_category, skill_deals_damage, skill_name, summon_name, summon_skill};
+use crate::decode::{EFFECT_MARKERS, Hit, PlayerInfo, RelayedCast, Spawn, skill_class, TALENT_PROCS, effect_skills, mercenary_name, skill_element, pretty_name, rank_category, skill_deals_damage, skill_name, summon_name, summon_skill};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
@@ -31,8 +31,23 @@ const DK_SKILLS: std::ops::RangeInclusive<u16> = 0x072e..=0x073e;
 const MINE_SKILL: u16 = 0x0771;
 const BOMB_SKILL: u16 = 0x0772;
 const BOMB_WINDOW: f64 = 3.0;
+/// Steam Conductor's second frost explosion comes 3 s after the cast.
+const STEAM_CONDUCTOR_WINDOW: f64 = 4.5;
+/// Turrets last 10 s (Mechanical Turret tooltip); with Master of Ice, Tactical Turret explodes when it disappears.
+const TURRET_LIFETIME: f64 = 11.0;
+/// Dwarf skills that leave a Poison DoT (Chimera Shot always, the rest with Master of Poison).
+const DWARF_POISON: [&str; 4] = ["Chimera Shot", "Quick Shot", "Shrapnel Shot", "Oil Slick"];
 /// Dwarf in the Box's damage comes ~0.9 s after its explosion aura; the aura is resent for ~2 s.
 const BOX_EXPLOSION_WINDOW: f64 = 3.0;
+/// Tighter for Lightning: the box's lightning field starts ticking right after the explosion.
+/// How long Rocket Pack / Oil Slick burns keep ticking after their ground's last aura.
+const FIRE_BURN_WINDOW: f64 = 5.0;
+/// Explosive Support (dwarf talent) spawns this bomb; it explodes 0.2-2 s later.
+const TALENT_BOMB: &str = "minion_talent_explosive_dwarf";
+const TALENT_BOMB_WINDOW: f64 = 3.5;
+const EXPLOSIVE_SUPPORT: &str = "Explosive Support";
+const BOX_LIGHTNING_WINDOW: f64 = 1.5;
+const MASTER_OF_LIGHTNING: &str = "Master of Lightning";
 /// Area damage (owner-tagged, no skill) we couldn't place.
 const AREA_SOURCE: &str = "Area damage";
 /// Ids at or above this are made up for targets whose id we never saw.
@@ -64,6 +79,27 @@ impl Tally {
         v.sort_by(|a, b| b.damage.cmp(&a.damage));
         v
     }
+    fn merge(&mut self, o: &Tally) {
+        self.damage += o.damage;
+        self.hits += o.hits;
+        self.crits += o.crits;
+        self.max_hit = self.max_hit.max(o.max_hit);
+        for (e, d) in &o.elements {
+            *self.elements.entry(e.clone()).or_default() += d;
+        }
+    }
+    /// Take back what `merge` added (the max hit stays).
+    fn unmerge(&mut self, o: &Tally) {
+        self.damage = self.damage.saturating_sub(o.damage);
+        self.hits = self.hits.saturating_sub(o.hits);
+        self.crits = self.crits.saturating_sub(o.crits);
+        for (e, d) in &o.elements {
+            if let Some(v) = self.elements.get_mut(e) {
+                *v = v.saturating_sub(*d);
+            }
+        }
+        self.elements.retain(|_, v| *v > 0);
+    }
     fn crit_rate(&self) -> f64 {
         if self.hits > 0 { self.crits as f64 / self.hits as f64 } else { 0.0 }
     }
@@ -78,11 +114,41 @@ struct AttackerStats {
     casts: HashMap<String, u32>,
 }
 
+impl AttackerStats {
+    fn merge(&mut self, o: &AttackerStats) {
+        self.total.merge(&o.total);
+        for (name, tally) in &o.sources {
+            self.sources.entry(name.clone()).or_default().merge(tally);
+        }
+        for (name, n) in &o.casts {
+            *self.casts.entry(name.clone()).or_default() += n;
+        }
+    }
+    fn unmerge(&mut self, o: &AttackerStats) {
+        self.total.unmerge(&o.total);
+        for (name, tally) in &o.sources {
+            if let Some(t) = self.sources.get_mut(name) {
+                t.unmerge(tally);
+            }
+        }
+        self.sources.retain(|_, t| t.hits > 0);
+        for (name, n) in &o.casts {
+            if let Some(c) = self.casts.get_mut(name) {
+                *c = c.saturating_sub(*n);
+            }
+        }
+        self.casts.retain(|_, c| *c > 0);
+    }
+}
+
 #[derive(Clone)]
 struct Encounter {
     start: f64,
     last: f64,
     attackers: HashMap<u32, AttackerStats>,
+    /// The part of `attackers` given to whoever we took for you (effect hits, your casts): moved
+    /// over if that guess changes.
+    assumed: HashMap<u32, AttackerStats>,
     targets: HashMap<(String, String), u64>, // (name, rank) -> damage
     /// Boss killed: (time, name). The timer stops there.
     killed: Option<(f64, String)>,
@@ -277,7 +343,23 @@ pub struct Meter {
     /// Counted once a direct hit tells us; see on_hit.
     pending_effects: Vec<(f64, Hit)>,
     /// Last time a Dwarf in the Box explosion aura was seen.
-    box_explosion: Option<f64>,
+    /// Dwarf in the Box explosion auras seen in the last minute (times).
+    box_explosions: VecDeque<f64>,
+    /// Effect auras seen in the last minute: (time, source), see decode::EFFECT_MARKERS. A history,
+    /// not just the last time, because held-back effect hits are counted later with their own time.
+    effect_markers: VecDeque<(f64, &'static str)>,
+    /// Master of Fire explosions credited recently: (time, damage). Its hits on every mob have the
+    /// same damage, and some land after the aura window.
+    fire_explosions: std::cell::RefCell<VecDeque<(f64, u32)>>,
+    /// Rocket Pack / Oil Slick burn ticks credited recently: (time, damage). Explosions hit far
+    /// harder, which keeps a burn tick inside the explosion aura's window out of Master of Fire.
+    fire_burns: std::cell::RefCell<VecDeque<(f64, u32)>>,
+    /// Explosive Support bomb spawns (times), and the damage of its area hits: (time, damage).
+    /// Each bomb deals the same damage twice, physical (area record) and Fire (tagged record).
+    talent_bombs: VecDeque<f64>,
+    /// When each summon spawned (kept per zone, like `entities`).
+    spawn_times: HashMap<u32, f64>,
+    talent_bomb_hits: std::cell::RefCell<VecDeque<(f64, u32)>>,
     recent: VecDeque<HitView>,
     targets: HashMap<u32, TargetState>,
     /// Every hit decoded so far, counted or not.
@@ -306,7 +388,13 @@ impl Meter {
             party_casts: HashMap::new(),
             me_votes: VecDeque::new(),
             pending_effects: Vec::new(),
-            box_explosion: None,
+            box_explosions: VecDeque::new(),
+            effect_markers: VecDeque::new(),
+            fire_explosions: Default::default(),
+            fire_burns: Default::default(),
+            talent_bombs: VecDeque::new(),
+            spawn_times: HashMap::new(),
+            talent_bomb_hits: Default::default(),
             recent: VecDeque::new(),
             targets: HashMap::new(),
             hits_seen: 0,
@@ -345,6 +433,7 @@ impl Meter {
         if let (Some(me), Some(enc)) = (self.me(), self.encounter.as_mut()) {
             if t - enc.last <= idle {
                 *enc.attackers.entry(me).or_default().casts.entry(skill_name(skill)).or_default() += 1;
+                *enc.assumed.entry(me).or_default().casts.entry(skill_name(skill)).or_default() += 1;
             }
         }
     }
@@ -373,20 +462,124 @@ impl Meter {
     }
 
     /// Burns, explosions and talent procs: the most likely skill of that element cast recently.
-    fn effect_source(&self, t: f64, element: Option<&str>) -> String {
+    fn effect_source(&self, t: f64, element: Option<&str>, dmg: u32) -> String {
         let Some(element) = element else {
             return self.recent_skill(t).unwrap_or_else(|| OTHER_SOURCE.into());
         };
+        // A frost explosion aura just before the record names its source exactly.
+        if element == "Ice" && self.my_class == Some("Steam Mechanicus") {
+            if let Some(source) = self.marker_near(t, "Ice") {
+                return source.into();
+            }
+        }
+        // Master of Fire (dwarf) level 2: a fire explosion right after its aura, the same damage on
+        // every mob; hits of it that land after the aura window are matched by that damage.
+        if element == "Fire" && self.my_class == Some("Steam Mechanicus") {
+            // Explosive Support: the Fire half of a talent bomb. It comes in the same message as the
+            // physical half (area record) but may crit on its own, or alone with the damage of an
+            // earlier physical half (the mob died to it).
+            let paired = self.talent_bomb_hits.borrow().iter().any(|(ht, d)| {
+                let dt = t - ht;
+                (0.0..=0.05).contains(&dt) || (*d == dmg && (0.0..=TALENT_BOMB_WINDOW).contains(&dt))
+            });
+            if paired {
+                return EXPLOSIVE_SUPPORT.into();
+            }
+            // Iron Drone's explosion.
+            if self.effect_markers.iter().any(|(mt, src)| *src == "Iron Drone" && (0.0..=0.8).contains(&(t - mt))) {
+                return "Iron Drone".into();
+            }
+            // Its explosion on Rocket Pack landing / Iron Fist / Iron Pounce counts as the talent's.
+            if self.effect_markers.iter().any(|(mt, src)| *src == EXPLOSIVE_SUPPORT && (0.0..=0.4).contains(&(t - mt))) {
+                return EXPLOSIVE_SUPPORT.into();
+            }
+            let mut fe = self.fire_explosions.borrow_mut();
+            fe.retain(|(ft, _)| t - ft <= 2.0);
+            let burn_max = self.fire_burns.borrow().iter().filter(|(bt, _)| t - bt <= FIRE_BURN_WINDOW).map(|b| b.1).max().unwrap_or(0);
+            let big = dmg as f64 > burn_max as f64 * 1.5;
+            let aura = self.effect_markers.iter().any(|(mt, src)| *src == "Master of Fire" && (0.0..=0.4).contains(&(t - mt)));
+            if big && (fe.iter().any(|(ft, d)| *d == dmg && *ft <= t) || aura) {
+                fe.push_back((t, dmg));
+                return "Master of Fire".into();
+            }
+            drop(fe);
+            // With Master of Fire the box's explosion turns Fire, ~0.9 s after its own fire aura (the
+            // plain box aura isn't enough: burns from other skills tick through it).
+            let box_fire = |(mt, src): &(f64, &str)| *src == "Dwarf in the Box" && (0.0..=1.5).contains(&(t - mt));
+            if self.effect_markers.iter().any(box_fire) {
+                return "Dwarf in the Box".into();
+            }
+        }
+        // Master of Lightning (dwarf): the box's explosion turns Lightning (its record comes ~0.9 s
+        // after the aura), then the box leaves a lightning field for 10 s; getting stunned and
+        // C14 Micro Rocket (level 2) also leave fields. The fields go under the mastery itself.
+        if element == "Lightning" && self.my_class == Some("Steam Mechanicus") {
+            let explosion = self.box_explosions.iter().any(|b| (0.0..=BOX_LIGHTNING_WINDOW).contains(&(t - b)));
+            return if explosion { "Dwarf in the Box".into() } else { MASTER_OF_LIGHTNING.into() };
+        }
+        // With Master of Poison the box's explosion is a tagged DamageDonePoison record instead
+        // of an area record; it still comes right after the explosion aura.
+        // Master of Ice makes it an ice explosion the same way. Poison/Ice only: Fire burns keep
+        // ticking through the ~2 s the aura is resent.
+        if matches!(element, "Poison" | "Ice") && self.box_exploded_before(t) {
+            return "Dwarf in the Box".into();
+        }
         let recent_within = |name: &str, window: f64| {
             self.casts.iter().rev().find(|(ct, id)| *ct <= t && t - ct <= window && skill_name(*id) == name).map(|c| c.0)
         };
+        // Master of Ice (dwarf, from its tooltip): Steam Conductor casts a frost explosion on use
+        // and another 3 s later, Bomb adds one, and Tactical Turret explodes when it disappears.
+        // Fallbacks for when no aura was seen.
+        if element == "Ice" && self.my_class == Some("Steam Mechanicus") {
+            if recent_within("Steam Conductor", STEAM_CONDUCTOR_WINDOW).is_some() {
+                return "Steam Conductor".into();
+            }
+            if recent_within("Bomb", BOMB_WINDOW).is_some() {
+                return "Bomb".into();
+            }
+            if recent_within("Tactical Turret", TURRET_LIFETIME).is_some() {
+                return "Tactical Turret".into();
+            }
+        }
         // A talent proc right after its skill's cast wins over skills of the same element.
         if let Some((_, _, talent)) =
             TALENT_PROCS.iter().find(|(skill, el, _)| *el == element && recent_within(skill, TALENT_PROC_WINDOW).is_some())
         {
             return talent.to_string();
         }
+        // Master of Fire burns (dwarf): ticks while Rocket Pack's burning ground or Oil Slick's
+        // puddle is active go to that skill (after Heavy Shot's own Fire part, just above). The
+        // burn keeps ticking a few seconds after the mob leaves the ground and the aura stops.
+        if element == "Fire" && self.my_class == Some("Steam Mechanicus") {
+            let burn = self
+                .effect_markers
+                .iter()
+                .filter(|(mt, src)| matches!(*src, "Rocket Pack" | "Oil Slick" | "Heavy Shot") && (0.0..=FIRE_BURN_WINDOW).contains(&(t - mt)))
+                .max_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some(&(_, source)) = burn {
+                let mut fb = self.fire_burns.borrow_mut();
+                fb.retain(|(bt, _)| t - bt <= FIRE_BURN_WINDOW);
+                fb.push_back((t, dmg));
+                return source.into();
+            }
+        }
+        // Dragonknight Lightning effect ticks (not Outburst's, handled just above): Master of
+        // Lightning's field, not whichever Lightning skill hit last.
+        if element == "Lightning" && self.my_class == Some("Dragonknight") {
+            return MASTER_OF_LIGHTNING.into();
+        }
         let recent = |name: &str| recent_within(name, EFFECT_WINDOW);
+        // Master of Poison (dwarf): Quick Shot, Shrapnel Shot and Oil Slick each leave a Poison
+        // DoT; credit the one used last (captures/2026-11-13_dwarf_poison_mastery.pcapng).
+        if element == "Poison" {
+            if let Some((_, name)) = DWARF_POISON
+                .iter()
+                .filter_map(|s| recent(s).map(|ct| (ct, *s)))
+                .max_by(|a, b| a.0.total_cmp(&b.0))
+            {
+                return name.into();
+            }
+        }
         effect_skills(element)
             .iter()
             .find(|s| recent(s).is_some())
@@ -405,28 +598,66 @@ impl Meter {
                     // A frost DoT ticking once a second; with no Ice skill of yours behind it
                     // (rangers have none) it's Jewel of Eternal Scorn's ice field.
                     "Ice" if !mage => "Jewel of Eternal Scorn".into(),
-                    // Dragonknights have no Lightning skill: it's the lightning set's field
-                    // (SetLight2026_warrior_lightning_field_aura).
-                    "Lightning" if self.my_class == Some("Dragonknight") => "Lightning Field".into(),
+                    // Dragonknights have no Lightning skill: it's Master of Lightning's field
+                    // (SetLight2026_warrior_lightning_field_aura; the user says it's the mastery).
+                    "Lightning" if self.my_class == Some("Dragonknight") => MASTER_OF_LIGHTNING.into(),
                     _ => format!("{element} effects"),
                 }
             })
     }
 
+    /// A box explosion aura in the few seconds before 	.
+    fn box_exploded_before(&self, t: f64) -> bool {
+        self.box_explosions.iter().any(|b| (0.0..=BOX_EXPLOSION_WINDOW).contains(&(t - b)))
+    }
+
     pub fn on_box_explosion(&mut self, t: f64) {
-        self.box_explosion = Some(t);
+        self.box_explosions.push_back(t);
+        while self.box_explosions.front().is_some_and(|b| t - b > 60.0) {
+            self.box_explosions.pop_front();
+        }
+    }
+
+    pub fn on_effect_marker(&mut self, t: f64, source: &'static str) {
+        self.effect_markers.push_back((t, source));
+        while self.effect_markers.front().is_some_and(|m| t - m.0 > 60.0) {
+            self.effect_markers.pop_front();
+        }
+    }
+
+    /// The effect aura of this element seen just before 	 (within its own window): the most recent,
+    /// and on a tie (auras resent together) the source you cast last.
+    fn marker_near(&self, t: f64, element: &str) -> Option<&'static str> {
+        let cast_at = |name: &str| self.casts.iter().rev().find(|(_, id)| skill_name(*id) == name).map_or(f64::MIN, |c| c.0);
+        self.effect_markers
+            .iter()
+            .filter(|(mt, src)| {
+                EFFECT_MARKERS.iter().any(|(_, s, el, win)| s == src && *el == element && (0.0..=*win).contains(&(t - mt)))
+            })
+            .max_by(|a, b| a.0.total_cmp(&b.0).then(cast_at(a.1).total_cmp(&cast_at(b.1))))
+            .map(|m| m.1)
     }
 
     /// Untagged area damage that names its owner: Dwarf in the Box right after its explosion
     /// aura, otherwise a Mine the owner placed (mines can wait a long time for a mob).
-    fn area_source(&self, t: f64, owner: u32, mine: bool) -> String {
-        if self.box_explosion.is_some_and(|b| (0.0..=BOX_EXPLOSION_WINDOW).contains(&(t - b))) {
+    fn area_source(&self, t: f64, owner: u32, mine: bool, dmg: u32) -> String {
+        if self.box_exploded_before(t) {
             return "Dwarf in the Box".into();
         }
         let casts = if mine { Some(&self.casts) } else { self.party_casts.get(&owner) };
-        // Bomb's explosion lands ~1.8 s after the cast, together with its Fire record.
-        if casts.is_some_and(|q| q.iter().any(|(ct, id)| *id == BOMB_SKILL && *ct <= t && t - ct <= BOMB_WINDOW)) {
-            return "Bomb".into();
+        // Bomb's explosion lands ~1.8 s after the cast, together with its Fire record. Explosive
+        // Support's bombs look the same; whichever came last.
+        let bomb = casts.and_then(|q| q.iter().rev().find(|(ct, id)| *id == BOMB_SKILL && *ct <= t && t - ct <= BOMB_WINDOW)).map(|c| c.0);
+        let talent = self.talent_bombs.iter().rev().find(|b| **b <= t && t - *b <= TALENT_BOMB_WINDOW).copied();
+        match (bomb, talent) {
+            (b, Some(tb)) if b.is_none_or(|b| tb >= b) => {
+                let mut hits = self.talent_bomb_hits.borrow_mut();
+                hits.retain(|(ht, _)| t - ht <= TALENT_BOMB_WINDOW);
+                hits.push_back((t, dmg));
+                return EXPLOSIVE_SUPPORT.into();
+            }
+            (Some(_), _) => return "Bomb".into(),
+            _ => {}
         }
         if casts.is_some_and(|q| q.iter().any(|(ct, id)| *id == MINE_SKILL && *ct <= t && t - ct <= 60.0)) {
             return "Mine".into();
@@ -454,7 +685,16 @@ fn recent_damaging(casts: &VecDeque<(f64, u16)>, t: f64) -> Option<String> {
 
 impl Meter {
 
-    pub fn on_spawn(&mut self, s: Spawn) {
+    pub fn on_spawn(&mut self, t: f64, s: Spawn) {
+        if summon_skill(&s.template).is_some() {
+            self.spawn_times.insert(s.id, t);
+        }
+        if s.template == TALENT_BOMB {
+            self.talent_bombs.push_back(t);
+            while self.talent_bombs.front().is_some_and(|b| t - b > 60.0) {
+                self.talent_bombs.pop_front();
+            }
+        }
         self.entities.insert(s.id, (s.template, s.rank));
     }
 
@@ -467,6 +707,7 @@ impl Meter {
     pub fn on_zone_change(&mut self) {
         self.finish();
         self.entities.clear();
+        self.spawn_times.clear();
         self.names.clear();
         self.classes.clear();
         self.party_casts.clear();
@@ -509,10 +750,10 @@ impl Meter {
         }
         // Area records come with their owner as attacker; tagged effects have none.
         if hit.effect && hit.attacker != 0 {
-            return self.area_source(t, hit.owner, mine);
+            return self.area_source(t, hit.owner, mine, hit.damage);
         }
         if hit.effect {
-            return self.effect_source(t, hit.element.as_deref());
+            return self.effect_source(t, hit.element.as_deref(), hit.damage);
         }
         if hit.attacker != hit.owner {
             return match self.entities.get(&hit.attacker) {
@@ -554,7 +795,26 @@ impl Meter {
     }
 
     pub fn on_hit(&mut self, t: f64, hit: Hit) {
+        let me_before = self.me();
         self.on_hit_inner(t, hit);
+        // You turned out to be someone else (the first vote came from another player's hit right
+        // after your cast, then your burns piled onto it): move what was counted as yours.
+        if let (Some(old), Some(new)) = (me_before, self.me()) {
+            if old != new && !self.names.contains_key(&old) {
+                if let Some(enc) = self.encounter.as_mut() {
+                    if let Some(moved) = enc.assumed.remove(&old) {
+                        if let Some(a) = enc.attackers.get_mut(&old) {
+                            a.unmerge(&moved);
+                            if a.total.hits == 0 && a.casts.is_empty() {
+                                enc.attackers.remove(&old);
+                            }
+                        }
+                        enc.attackers.entry(new).or_default().merge(&moved);
+                        enc.assumed.entry(new).or_default().merge(&moved);
+                    }
+                }
+            }
+        }
         // You're known now: count the effect hits that came first (a Bomb opening a fight).
         if !self.pending_effects.is_empty() && self.me().is_some() {
             for (pt, ph) in std::mem::take(&mut self.pending_effects) {
@@ -599,11 +859,14 @@ impl Meter {
         if hit.effect && hit.owner != 0 && self.me().is_none() && self.last_cast.is_some_and(|c| t - c <= 60.0) {
             self.me_votes.push_back(hit.owner);
         }
+        // Effect hits we give to you don't vote for who you are (or one wrong guess sticks).
+        let mut assumed_mine = false;
         if hit.effect && hit.owner == 0 {
             match self.me() {
                 Some(me) => {
                     // attacker stays 0: that's how source_name tells these from area records.
                     hit.owner = me;
+                    assumed_mine = true;
                 }
                 None => {
                     // Only worth keeping if you've been casting: then it's most likely yours.
@@ -640,8 +903,14 @@ impl Meter {
             (Some(mine), Some(theirs)) => mine != theirs,
             _ => false,
         };
-        if let Some(c) = self.last_cast.filter(|_| !other_class) {
-            if (0.0..=CAST_WINDOW).contains(&(t - c)) {
+        // A summon spawned by a skill you just cast (turrets fire a few seconds after the cast,
+        // past CAST_WINDOW): its owner is you.
+        let my_summon = hit.attacker != hit.owner
+            && self.entities.get(&hit.attacker).and_then(|(tpl, _)| summon_skill(tpl)).zip(self.spawn_times.get(&hit.attacker)).is_some_and(
+                |(skill, st)| self.casts.iter().any(|(ct, id)| (0.0..=CAST_WINDOW).contains(&(st - ct)) && skill_name(*id) == skill),
+            );
+        if let Some(c) = self.last_cast.filter(|_| !other_class && !assumed_mine) {
+            if (0.0..=CAST_WINDOW).contains(&(t - c)) || my_summon {
                 self.me_votes.push_back(who);
                 if self.me_votes.len() > ME_VOTES {
                     self.me_votes.pop_front();
@@ -727,7 +996,8 @@ impl Meter {
                     }
                 }
             }
-            self.encounter = Some(Encounter { start: t, last: t, attackers, targets: HashMap::new(), killed: None, saved: false });
+            let assumed = me.and_then(|m| attackers.get(&m).cloned().map(|a| (m, a))).into_iter().collect();
+            self.encounter = Some(Encounter { start: t, last: t, attackers, assumed, targets: HashMap::new(), killed: None, saved: false });
         }
         if me == Some(who) && hit.attacker != hit.owner {
             if let Some(m) = self.entities.get(&hit.attacker).and_then(|(tpl, _)| mercenary_name(tpl)) {
@@ -749,6 +1019,11 @@ impl Meter {
         }
         let enc = self.encounter.as_mut().unwrap();
         enc.last = enc.last.max(t);
+        if assumed_mine {
+            let a = enc.assumed.entry(who).or_default();
+            a.total.add(hit.damage, hit.crit, element);
+            a.sources.entry(source.clone()).or_default().add(hit.damage, hit.crit, element);
+        }
         let a = enc.attackers.entry(who).or_default();
         a.total.add(hit.damage, hit.crit, element);
         a.sources.entry(source).or_default().add(hit.damage, hit.crit, element);

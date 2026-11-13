@@ -24,6 +24,11 @@ const NAMED_ICONS: Record<string, string> = {
   'Jewel of Eternal Scorn': 'jewel-eternal-scorn',
   "Agathon's Guard": 'agathon-guard',
   'Shrapnel Shot': 'sharpnel-shot',
+  // Elemental masteries: same icons for every class.
+  'Master of Fire': 'fire-mastery',
+  'Master of Ice': 'ice-mastery',
+  'Master of Lightning': 'lightning-mastery',
+  'Master of Poison': 'poison-mastery',
   Shieldwall: 'dwarf_skill_shieldwall',
 }
 

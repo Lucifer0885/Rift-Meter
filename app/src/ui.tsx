@@ -16,7 +16,7 @@ export function Card({ title, children, right }: { title?: string; children: Rea
 
 export function Stat({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: string }) {
   return (
-    <div className="rounded-lg border border-white/5 bg-white/[0.03] px-4 py-3">
+    <div className="rounded-lg border border-white/5 bg-white/3 px-4 py-3">
       <div className="text-xs text-zinc-400">{label}</div>
       <div className={`tabular mt-1 text-2xl font-semibold ${accent ?? 'text-zinc-100'}`}>{value}</div>
       {sub && <div className="tabular mt-0.5 text-xs text-zinc-500">{sub}</div>}
@@ -47,7 +47,7 @@ export function Toggle({
         }`}
       >
         <span
-          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${checked ? 'left-[18px]' : 'left-0.5'}`}
+          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${checked ? 'left-4.5' : 'left-0.5'}`}
         />
       </button>
       <span>
@@ -88,7 +88,7 @@ export function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="mt-1 w-full accent-[var(--color-me)]"
+        className="mt-1 w-full accent-me"
       />
     </label>
   )

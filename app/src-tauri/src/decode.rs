@@ -55,21 +55,25 @@ static HIT: LazyLock<Regex> =
 /// Effect damage (burns, frost explosions, ...): same fields as a hit, but no attacker:
 /// [kind] [u64 hp] [u64 max] 00000000 [u32 ?] [u32 damage] ff ff ff ff ... "DamageDone<Element>" [u32 target] ff
 static EFFECT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s-u)(.{8})(.{8})\x00\x00\x00\x00.{4}(.{4})\xff\xff\xff\xff(..\x01\x00)?").unwrap()
+    Regex::new(r"(?s-u)(.{8})(.{8})\x00\x00\x00\x00.{4}(.{4})\xff\xff\xff\xff(..\x01\x00)?")
+        .unwrap()
 });
-static EFFECT_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s-u)[\x0a-\x18]\x00Damage(Done|Received)([A-Za-z]*)(..\x01\x00)\xff").unwrap());
+static EFFECT_TAG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s-u)[\x0a-\x18]\x00Damage(Done|Received)([A-Za-z]*)(..\x01\x00)\xff").unwrap()
+});
 /// How far after an effect record its tag string can be.
 const EFFECT_TAG_SEARCH_BITS: usize = 96 * 8;
 static TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s-u)(..\x01\x00)\xff").unwrap());
 // Spawn: 2a 00 [u16 len] [template] ... [u16 len] "Rank_xxx" [u16 len] [extra, e.g. "boss_basic"]
 //        [u32 id] ff
-static SPAWN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s-u)\x2a\x00(..)[A-Za-z0-9_]{4}").unwrap());
+static SPAWN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s-u)\x2a\x00(..)[A-Za-z0-9_]{4}").unwrap());
 // Player info (sub-message 0x97), sent on zone entry:
 //   [u32 player id] [u16 len] [name, UTF-8] [u16 len] [zone or empty] [u8 class] [u16 level] ...
 // Names can be non-ASCII (e.g. Cyrillic letters), so only the start is matched here.
-static NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s-u)(..\x01\x00)([\x03-\x30])\x00[A-Za-z0-9\xc0-\xff]").unwrap());
+static NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s-u)(..\x01\x00)([\x03-\x30])\x00[A-Za-z0-9\xc0-\xff]").unwrap()
+});
 /// Class numbers in the player info, in the client's order (ui/emblem_class_* at 0x140f49610):
 /// confirmed 1 = Spellweaver (mage), 2 = Ranger.
 const CLASSES: [&str; 4] = ["Dragonknight", "Spellweaver", "Ranger", "Steam Mechanicus"];
@@ -174,7 +178,10 @@ pub fn find_hits(msg: &[u8]) -> Vec<Hit> {
             if kind & 0xc0 != 0 {
                 continue;
             }
-            if x[start - ZERO_PAD.0..start - ZERO_PAD.1].iter().any(|&b| b != 0) {
+            if x[start - ZERO_PAD.0..start - ZERO_PAD.1]
+                .iter()
+                .any(|&b| b != 0)
+            {
                 continue;
             }
             let hp = le64(&x[start - 24..]);
@@ -233,7 +240,12 @@ pub fn find_effect_hits(msg: &[u8]) -> Vec<Hit> {
         let x = shifted(msg, k);
         for c in EFFECT_TAG.captures_iter(&x) {
             let bit = c.get(0).unwrap().start() * 8 + k as usize;
-            tags.push((bit, &c[1] == b"Received", String::from_utf8_lossy(&c[2]).into_owned(), le32(&c[3])));
+            tags.push((
+                bit,
+                &c[1] == b"Received",
+                String::from_utf8_lossy(&c[2]).into_owned(),
+                le32(&c[3]),
+            ));
         }
         for c in EFFECT.captures_iter(&x) {
             let start = c.get(0).unwrap().start();
@@ -250,7 +262,16 @@ pub fn find_effect_hits(msg: &[u8]) -> Vec<Hit> {
             let owner = c.get(4).map(|m| le32(m.as_bytes()));
             // End before the owner id, so tags are measured from the damage fields as before.
             let end = c.get(3).unwrap().end() + 4;
-            recs.push((end * 8 + k as usize, k, kind & KIND_CRIT != 0, hp, max, dmg, kind, owner));
+            recs.push((
+                end * 8 + k as usize,
+                k,
+                kind & KIND_CRIT != 0,
+                hp,
+                max,
+                dmg,
+                kind,
+                owner,
+            ));
         }
     }
     tags.sort_by_key(|t| t.0);
@@ -283,7 +304,11 @@ pub fn find_effect_hits(msg: &[u8]) -> Vec<Hit> {
             at: (k, end / 8),
             effect: true,
             // Plain "DamageDone" = physical.
-            element: Some(if tag.2.is_empty() { "Physical".into() } else { tag.2.clone() }),
+            element: Some(if tag.2.is_empty() {
+                "Physical".into()
+            } else {
+                tag.2.clone()
+            }),
             echo: false,
         });
     }
@@ -321,11 +346,90 @@ pub fn find_effect_hits(msg: &[u8]) -> Vec<Hit> {
 /// Dwarf in the Box going off: the server spawns this aura ~0.9 s before the explosion's damage
 /// records (captures/2026-11-13_dwarf_mobs_box_mine.pcapng). The aura is resent for ~2 s.
 pub fn has_box_explosion(msg: &[u8]) -> bool {
-    const NAME: &[u8] = b"skill_jackinthebox_explosion_aura";
+    // "_aura", or "_poison_aura" with Master of Poison.
+    const NAME: &[u8] = b"skill_jackinthebox_explosion_";
     if msg.len() < NAME.len() || msg[0] != SERVER_BUNDLE || msg.len() > MAX_HIT_MESSAGE {
         return false;
     }
     (0..8).any(|k| shifted(msg, k).windows(NAME.len()).any(|w| w == NAME))
+}
+
+/// Auras that mark a dwarf effect: (aura name part, source, element, how long after the aura its
+/// damage records can come). The server spawns them just before the damage and resends them about
+/// once a second while they last.
+/// Frost: captures/2026-11-13_dwarf_ice_mastery.pcapng; fire: 2026-11-13_dwarf_fire_mastery.pcapng.
+pub const EFFECT_MARKERS: &[(&[u8], &str, &str, f64)] = &[
+    (
+        b"skill_steamconductor_end_frost_explosion",
+        "Steam Conductor",
+        "Ice",
+        0.4,
+    ),
+    (b"skill_grenade_frost_explosion", "Bomb", "Ice", 0.4),
+    // Master of Ice level 2: a small frost explosion when you get hit.
+    (
+        b"dwarf_talent_frozen_master_frost_explosion",
+        "Master of Ice",
+        "Ice",
+        0.4,
+    ),
+    // Master of Fire level 2: a fire explosion on hit (same damage on every mob, ~0.06 s later).
+    (
+        b"dwarf_talent_fire_explosion",
+        "Master of Fire",
+        "Fire",
+        0.4,
+    ),
+    // Master of Fire burns: Rocket Pack's burning ground and Oil Slick's burning puddle. Burn
+    // ticks come once a second while they last.
+    (
+        b"skill_hoverjump_burning_ground",
+        "Rocket Pack",
+        "Fire",
+        1.2,
+    ),
+    (b"skill_trail_fire", "Oil Slick", "Fire", 1.2),
+    // Dwarf in the Box with Master of Fire: its explosion record comes ~0.9 s after this aura.
+    (
+        b"skill_jackinthebox_explosion_fire",
+        "Dwarf in the Box",
+        "Fire",
+        1.5,
+    ),
+    // Explosive Support's explosion on Rocket Pack landing / Iron Fist / Iron Pounce: Fire
+    // records ~0.08 s later. (Its spawned bombs are found by their minion instead.)
+    (
+        b"dwarf_talent_explosive_damage",
+        "Explosive Support",
+        "Fire",
+        0.4,
+    ),
+    // Iron Drone (talent): the drone's explosion, Fire records ~0.3 s later.
+    (
+        b"dwarf_talent_irondwarf_minion_drone_explosion",
+        "Iron Drone",
+        "Fire",
+        0.8,
+    ),
+    // Heavy Shot's explosion leaves a short burn.
+    (b"skill_heavyshot_explosion", "Heavy Shot", "Fire", 0.4),
+];
+
+/// Sources (see EFFECT_MARKERS) whose aura is in this message.
+pub fn find_effect_markers(msg: &[u8]) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if msg.len() < 30 || msg[0] != SERVER_BUNDLE || msg.len() > MAX_HIT_MESSAGE {
+        return out;
+    }
+    for k in 0..8 {
+        let x = shifted(msg, k);
+        for (name, source, _, _) in EFFECT_MARKERS {
+            if !out.contains(source) && x.windows(name.len()).any(|w| w == *name) {
+                out.push(*source);
+            }
+        }
+    }
+    out
 }
 
 /// Spawn records. The name and the rank of one record sit at different bit alignments,
@@ -348,7 +452,11 @@ pub fn find_spawns(msg: &[u8]) -> Vec<Spawn> {
             let name = &x[start..start + len];
             if is_ident(name) {
                 let bit = start * 8 + k as usize;
-                names.push((bit, bit + len * 8, String::from_utf8_lossy(name).into_owned()));
+                names.push((
+                    bit,
+                    bit + len * 8,
+                    String::from_utf8_lossy(name).into_owned(),
+                ));
             }
         }
         for m in RANK.find_iter(&x) {
@@ -368,7 +476,11 @@ pub fn find_spawns(msg: &[u8]) -> Vec<Spawn> {
             .filter(|(_, nend, _)| *nend <= rpos && rpos - nend <= RANK_SEARCH_BITS)
             .last();
         if let Some((_, _, name)) = best {
-            out.push(Spawn { id, template: name.clone(), rank });
+            out.push(Spawn {
+                id,
+                template: name.clone(),
+                rank,
+            });
         }
     }
     out
@@ -395,21 +507,40 @@ pub fn find_names(msg: &[u8]) -> Vec<PlayerInfo> {
             at = c.get(0).unwrap().start() + 1;
             let start = c.get(0).unwrap().end() - 1;
             let len = c[2][0] as usize;
-            let Some(raw) = x.get(start..start + len) else { continue };
-            let Ok(name) = std::str::from_utf8(raw) else { continue };
-            if name.chars().count() < 3 || !name.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-') {
+            let Some(raw) = x.get(start..start + len) else {
+                continue;
+            };
+            let Ok(name) = std::str::from_utf8(raw) else {
+                continue;
+            };
+            if name.chars().count() < 3
+                || !name
+                    .chars()
+                    .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
+            {
                 continue;
             }
             // Then [u16 len][zone], [u8 class], [u16 level].
             let rest = &x[start + len..];
-            let (class, level) = match rest.get(..2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize) {
+            let (class, level) = match rest
+                .get(..2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
+            {
                 Some(zl) if zl < 64 && rest.len() >= zl + 5 => {
                     let lvl = u16::from_le_bytes([rest[zl + 3], rest[zl + 4]]);
-                    (CLASSES.get(rest[zl + 2] as usize).copied(), (1..=500).contains(&lvl).then_some(lvl))
+                    (
+                        CLASSES.get(rest[zl + 2] as usize).copied(),
+                        (1..=500).contains(&lvl).then_some(lvl),
+                    )
                 }
                 _ => (None, None),
             };
-            let info = PlayerInfo { id: le32(&c[1]), name: name.to_string(), class, level };
+            let info = PlayerInfo {
+                id: le32(&c[1]),
+                name: name.to_string(),
+                class,
+                level,
+            };
             if !out.contains(&info) {
                 out.push(info);
             }
@@ -421,8 +552,10 @@ pub fn find_names(msg: &[u8]) -> Vec<PlayerInfo> {
 /// minion_talent_frostnova_circle -> "Frostnova circle"
 pub fn summon_name(template: &str) -> String {
     let t = template.strip_suffix("_scale").unwrap_or(template);
-    let parts: Vec<&str> =
-        t.split('_').filter(|p| !matches!(*p, "minion" | "talent" | "skill") && !p.is_empty()).collect();
+    let parts: Vec<&str> = t
+        .split('_')
+        .filter(|p| !matches!(*p, "minion" | "talent" | "skill") && !p.is_empty())
+        .collect();
     let s = parts.join(" ");
     let mut c = s.chars();
     match c.next() {
@@ -433,7 +566,11 @@ pub fn summon_name(template: &str) -> String {
 
 /// Skill id of a client skill-use message.
 pub fn cast_skill(msg: &[u8]) -> Option<u16> {
-    if msg.len() < 20 || msg[0] != CLIENT_BUNDLE || !CAST_TYPES.contains(&msg[1]) || msg[2..5] != [0, 0, 0] {
+    if msg.len() < 20
+        || msg[0] != CLIENT_BUNDLE
+        || !CAST_TYPES.contains(&msg[1])
+        || msg[2..5] != [0, 0, 0]
+    {
         return None;
     }
     Some(u16::from_le_bytes([msg[5], msg[6]]))
@@ -472,7 +609,11 @@ const RELAY_SUB: u8 = 0x5f;
 
 pub fn find_relayed_casts(msg: &[u8]) -> Vec<RelayedCast> {
     let mut out: Vec<RelayedCast> = Vec::new();
-    if msg.len() < 20 || msg[0] != SERVER_BUNDLE || msg[1] != RELAY_SUB || msg.len() > MAX_HIT_MESSAGE {
+    if msg.len() < 20
+        || msg[0] != SERVER_BUNDLE
+        || msg[1] != RELAY_SUB
+        || msg.len() > MAX_HIT_MESSAGE
+    {
         return out;
     }
     for k in 0..8 {
@@ -569,30 +710,34 @@ const SKILLS: &[(u16, &str, bool)] = &[
     // Steam Mechanicus (captures/2026-11-13_dwarf.pcapng). Named from what each cast makes the
     // server spawn ~0.1-0.5 s later (auras, minions) and the hits that follow; not from a known
     // cast order yet. "Skill xxxx" ones are unidentified, waiting on the user's feedback.
-    (0x076f, "Heavy Shot", true),            // skill_heavyshot_explosion_aura + physical hit
-    (0x0778, "Dwarf in the Box", true),      // minion_jackinthebox; explodes ~5 s later (Fire effect)
-    (0x077c, "Flamethrower", true),          // Fire hits on several targets, re-sent while held
-    (0x077a, "Rocket Pack", false),          // skill_hoverjump_buff_damage_aura
-    (0x0772, "Bomb", true),                  // skill_grenade_damage_aura
-    (0x0771, "Mine", true),                  // dwarf_mine
-    (0x0773, "Oil Slick", false),            // skill_trail_aura
-    (0x0774, "Mechanical Turret", false),    // minion_combatTurret (its hits come from the turret)
-    (0x0779, "Tactical Turret", false),      // minion_coveringfireturret
-    (0x0775, "Tesla Turret", false),         // minion_teslaturret
-    (0x0776, "Machine Gun Turret", false),   // minion_machinegunturret
-    (0x077b, "Shrapnel Shot", true),         // probable: Fire hit with skill_ShrapnelShot_damage_aura
-    (0x076e, "Chimera Shot", true),          // probable: Poison hits + stacking Poison ticks
-    (0x0770, "C14 Micro Rocket", true),      // user-confirmed
-    (0x077e, "Iron Fist", true),             // user-confirmed
-    (0x077f, "Iron Pounce", true),           // user-confirmed
-    (0x076d, "Quick Shot", true),            // probable: physical hit; 076e (Chimera Shot) is its Chimera version
-    (0x0777, "Steam Conductor", false),      // user-confirmed
-    (0x076c, "Iron Dwarf", false),           // user-confirmed
-    (0x076b, "Stop Iron Dwarf", false),      // user-confirmed: leaves Iron Dwarf form
+    (0x076f, "Heavy Shot", true), // skill_heavyshot_explosion_aura + physical hit
+    (0x0778, "Dwarf in the Box", true), // minion_jackinthebox; explodes ~5 s later (Fire effect)
+    (0x077c, "Flamethrower", true), // Fire hits on several targets, re-sent while held
+    (0x077a, "Rocket Pack", false), // skill_hoverjump_buff_damage_aura
+    (0x0772, "Bomb", true),       // skill_grenade_damage_aura
+    (0x0771, "Mine", true),       // dwarf_mine
+    (0x0773, "Oil Slick", false), // skill_trail_aura
+    (0x0774, "Mechanical Turret", false), // minion_combatTurret; user-confirmed by its tooltip (blue, lasts 10 s)
+    (0x0779, "Tactical Turret", false), // minion_coveringfireturret
+    (0x0775, "Tesla Turret", false), // minion_teslaturret
+    (0x0776, "Machine Gun Turret", false), // minion_machinegunturret
+    (0x077b, "Shrapnel Shot", true), // probable: Fire hit with skill_ShrapnelShot_damage_aura
+    (0x076e, "Chimera Shot", true), // probable: Poison hits + stacking Poison ticks
+    (0x0770, "C14 Micro Rocket", true), // user-confirmed
+    (0x077e, "Iron Fist", true),  // user-confirmed
+    (0x077f, "Iron Pounce", true), // user-confirmed
+    (0x076d, "Quick Shot", true), // probable: physical hit; 076e (Chimera Shot) is its Chimera version
+    (0x0777, "Steam Conductor", false), // user-confirmed
+    (0x076c, "Iron Dwarf", false), // user-confirmed
+    (0x076b, "Stop Iron Dwarf", false), // user-confirmed: leaves Iron Dwarf form
 ];
 
 pub fn skill_name(id: u16) -> String {
-    SKILLS.iter().find(|s| s.0 == id).map(|s| s.1.to_string()).unwrap_or_else(|| format!("Skill {id:04x}"))
+    SKILLS
+        .iter()
+        .find(|s| s.0 == id)
+        .map(|s| s.1.to_string())
+        .unwrap_or_else(|| format!("Skill {id:04x}"))
 }
 
 pub fn skill_deals_damage(id: u16) -> bool {
@@ -619,20 +764,47 @@ pub fn skill_element(skill: &str) -> Option<&'static str> {
 /// Outburst deals nothing by default; with Lightning Mastery each cast spawns
 /// warrior_talent_lightning_master_lightning_explosion_aura and two DamageDoneLightning records
 /// ~0.4 s later (captures/2026-11-12_dk_outburst_mastery.pcapng). Credited to Outburst itself.
-pub const TALENT_PROCS: &[(&str, &str, &str)] =
-    &[("Deadly Blow", "Fire", "Exploding Hit"), ("Outburst", "Lightning", "Outburst"), ("Heavy Shot", "Fire", "Heavy Shot")];
+pub const TALENT_PROCS: &[(&str, &str, &str)] = &[
+    ("Deadly Blow", "Fire", "Exploding Hit"),
+    ("Outburst", "Lightning", "Outburst"),
+    ("Heavy Shot", "Fire", "Heavy Shot"),
+    ("C14 Micro Rocket", "Poison", "C14 Micro Rocket"),
+];
 
 pub fn effect_skills(element: &str) -> &'static [&'static str] {
     match element {
-        "Fire" => &["Fireball", "Meteor", "Fire Blast", "Guardian of Flames", "Explosive Arrow", "Fury of the Dragon",
+        "Fire" => &[
+            "Fireball",
+            "Meteor",
+            "Fire Blast",
+            "Guardian of Flames",
+            "Explosive Arrow",
+            "Fury of the Dragon",
             // Dwarf: Bomb's Fire records come ~1.8 s after the cast (2026-11-13_dwarf_box_bomb_mine2).
             // The box last: its own fuse ticks are damage to the box, and on Grimmag it was killed
             // before its explosion did any damage.
-            "Bomb", "Mine", "Flamethrower", "Shrapnel Shot", "Dwarf in the Box"],
-        "Ice" => &["Frost Wind", "Frost Charge", "Frozen Sphere", "Frost Nova", "Ice Missile"],
+            "Bomb",
+            "Mine",
+            "Flamethrower",
+            "Shrapnel Shot",
+            "Dwarf in the Box",
+        ],
+        "Ice" => &[
+            "Frost Wind",
+            "Frost Charge",
+            "Frozen Sphere",
+            "Frost Nova",
+            "Ice Missile",
+        ],
         "Lightning" => &["Ball Lightning", "Chain Lightning", "Lightning Strike"],
         // Ranger poison: Hunting Trap leaves a DoT; Chimera Scatter adds a little.
-        "Poison" => &["Toxic Explosion", "Hunting Trap", "Chimera Scatter", "Chimera Bloody Wild Swing", "Chimera Shot"],
+        "Poison" => &[
+            "Toxic Explosion",
+            "Hunting Trap",
+            "Chimera Scatter",
+            "Chimera Bloody Wild Swing",
+            "Chimera Shot",
+        ],
         _ => &[],
     }
 }
@@ -673,6 +845,12 @@ pub fn summon_skill(template: &str) -> Option<&'static str> {
         ("machinegunturret", "Machine Gun Turret"),
         ("jackinthebox", "Dwarf in the Box"),
         ("dwarf_mine", "Mine"),
+        // Iron Drone talent: kills in Iron Dwarf form summon drones that explode ("Irondwarf
+        // dwarven drone" in the meter before, from its template).
+        ("dwarven_drone", "Iron Drone"),
+        // Master of Poison level 2: on a kill, a chance to spawn 3 poison bullets circling for
+        // 10 s ("Poison orbital field" in the meter before; template seen by the user live).
+        ("poison_orbital_field", "Master of Poison"),
         // Jewels that summon a fighter.
         ("jewel_buff_snow_wolf", "Jewel of Glacial Fang"),
     ]
@@ -691,20 +869,39 @@ pub fn pretty_name(template: &str) -> String {
         parts.drain(..=i);
     }
     // zone code like a0301 / c2303
-    if parts.first().is_some_and(|p| p.len() == 5 && p.as_bytes()[0].is_ascii_alphabetic() && p[1..].bytes().all(|b| b.is_ascii_digit())) {
+    if parts.first().is_some_and(|p| {
+        p.len() == 5
+            && p.as_bytes()[0].is_ascii_alphabetic()
+            && p[1..].bytes().all(|b| b.is_ascii_digit())
+    }) {
         parts.remove(0);
     }
     parts.retain(|p| !matches!(*p, "normal" | "g") && !p.bytes().all(|b| b.is_ascii_digit()));
     let s = parts.join(" ");
-    if s.is_empty() { template.to_string() } else { s }
+    if s.is_empty() {
+        template.to_string()
+    } else {
+        s
+    }
 }
 
 /// Rank id -> category used by the client: worldboss, boss, leader, champion, guardian,
 /// add (boss summons), minion (player summons), monster. e.g. Rank_boss_endlesstower -> boss.
 pub fn rank_category(rank: &str) -> String {
-    let Some(rid) = rank.strip_prefix("Rank_") else { return "unknown".into() };
+    let Some(rid) = rank.strip_prefix("Rank_") else {
+        return "unknown".into();
+    };
     let rid = rid.to_ascii_lowercase();
-    for cat in ["worldboss", "boss", "leader", "champion", "guardian", "add", "minion", "monster"] {
+    for cat in [
+        "worldboss",
+        "boss",
+        "leader",
+        "champion",
+        "guardian",
+        "add",
+        "minion",
+        "monster",
+    ] {
         if rid == cat || rid.starts_with(&format!("{cat}_")) || rid.ends_with(&format!("_{cat}")) {
             return cat.into();
         }
