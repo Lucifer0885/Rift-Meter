@@ -1,6 +1,6 @@
 //! Packets in, meter updates out.
 
-use crate::decode::{cast_skill, cast_tick, find_effect_hits, find_relayed_casts, find_hits, find_names, find_spawns, find_effect_markers, has_box_explosion, is_zone_load};
+use crate::decode::{cast_skill, cast_tick, find_effect_hits, find_relayed_casts, find_hits, find_names, find_spawns, find_effect_markers, has_box_explosion, is_zone_load, zone_load_player};
 use crate::meter::Meter;
 use crate::packet::parse_udp;
 use crate::raknet::Reassembler;
@@ -32,6 +32,9 @@ impl Engine {
             } else {
                 if is_zone_load(&msg) {
                     meter.on_zone_change();
+                    if let Some((name, class, id)) = zone_load_player(&msg) {
+                        meter.on_local_player(name, class, id);
+                    }
                 }
                 for s in find_spawns(&msg) {
                     meter.on_spawn(time, s);

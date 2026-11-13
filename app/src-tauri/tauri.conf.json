@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Riftmeter",
-  "version": "0.5.18",
+  "version": "0.5.19",
   "identifier": "dev.dsodpsmeter.app",
   "build": {
     "frontendDist": "../dist",
@@ -18,7 +18,8 @@
         "height": 700,
         "minWidth": 760,
         "minHeight": 520,
-        "resizable": true
+        "resizable": true,
+        "decorations": false
       },
       {
         "label": "overlay",

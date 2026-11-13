@@ -78,6 +78,17 @@ static NAME: LazyLock<Regex> = LazyLock::new(|| {
 /// confirmed 1 = Spellweaver (mage), 2 = Ranger.
 const CLASSES: [&str; 4] = ["Dragonknight", "Spellweaver", "Ranger", "Steam Mechanicus"];
 const PLAYER_INFO: u8 = 0x97;
+/// The same record for some characters, without the zone name (captures/2026-11-13_character_switch).
+const PLAYER_INFO_SHORT: u8 = 0xa7;
+
+/// Character names: letters, digits, `_`, `-` and spaces inside ("Saint LuсiфеЯ").
+fn valid_name(name: &str) -> bool {
+    name.chars().count() >= 3
+        && !name.starts_with(' ')
+        && !name.ends_with(' ')
+        && !name.contains("  ")
+        && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == ' ')
+}
 static RANK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s-u)(..)Rank_").unwrap());
 
 fn is_ident(b: &[u8]) -> bool {
@@ -404,6 +415,10 @@ pub const EFFECT_MARKERS: &[(&[u8], &str, &str, f64)] = &[
         "Fire",
         0.4,
     ),
+    // Master of Lightning level 2 (all classes): Lightning Strike's field and the field when
+    // you're stunned. Resent ~1/s while it ticks (captures/2026-11-13_mage_lightning_mastery).
+    (b"skill_lightningstrike_lightning_field", "Master of Lightning", "Lightning", 1.5),
+    (b"all_talent_lightning_master_lightning_field", "Master of Lightning", "Lightning", 1.5),
     // Iron Drone (talent): the drone's explosion, Fire records ~0.3 s later.
     (
         b"dwarf_talent_irondwarf_minion_drone_explosion",
@@ -497,7 +512,7 @@ pub struct PlayerInfo {
 
 pub fn find_names(msg: &[u8]) -> Vec<PlayerInfo> {
     let mut out: Vec<PlayerInfo> = Vec::new();
-    if msg.len() < 12 || msg[0] != SERVER_BUNDLE || msg[1] != PLAYER_INFO || msg.len() > 8192 {
+    if msg.len() < 12 || msg[0] != SERVER_BUNDLE || !matches!(msg[1], PLAYER_INFO | PLAYER_INFO_SHORT) || msg.len() > 8192 {
         return out;
     }
     for k in 0..8 {
@@ -513,14 +528,11 @@ pub fn find_names(msg: &[u8]) -> Vec<PlayerInfo> {
             let Ok(name) = std::str::from_utf8(raw) else {
                 continue;
             };
-            if name.chars().count() < 3
-                || !name
-                    .chars()
-                    .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
-            {
+            if !valid_name(name) {
                 continue;
             }
-            // Then [u16 len][zone], [u8 class], [u16 level].
+            // Then [u16 len][zone], [u8 class], [u16 level]; or, in the short record, straight
+            // [u8 class][u16 level] (class < 4 and level >= 1 can't read as a short zone length).
             let rest = &x[start + len..];
             let (class, level) = match rest
                 .get(..2)
@@ -532,6 +544,13 @@ pub fn find_names(msg: &[u8]) -> Vec<PlayerInfo> {
                         CLASSES.get(rest[zl + 2] as usize).copied(),
                         (1..=500).contains(&lvl).then_some(lvl),
                     )
+                }
+                Some(_) if rest.len() >= 3 => {
+                    let lvl = u16::from_le_bytes([rest[1], rest[2]]);
+                    match (CLASSES.get(rest[0] as usize).copied(), (1..=500).contains(&lvl)) {
+                        (Some(c), true) => (Some(c), Some(lvl)),
+                        _ => (None, None),
+                    }
                 }
                 _ => (None, None),
             };
@@ -580,6 +599,36 @@ pub fn cast_skill(msg: &[u8]) -> Option<u16> {
 /// Entity ids are reassigned from then on.
 pub fn is_zone_load(msg: &[u8]) -> bool {
     msg.len() > 200_000 && msg[0] == SERVER_BUNDLE && msg[1] == 0x1d
+}
+
+/// Your own character in the zone-load message: name, class, and entity id when they read right.
+/// Near the start: [u16 len][name] [u8 class] [9 bytes] [u16 len][zone, e.g. a0200_kingscity] [17 bytes]
+/// [u32 id] (captures/2026-11-12_ranger_zone.pcapng, two zone loads).
+pub fn zone_load_player(msg: &[u8]) -> Option<(String, Option<&'static str>, Option<u32>)> {
+    if !is_zone_load(msg) {
+        return None;
+    }
+    let u16_at = |i: usize| msg.get(i..i + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    for i in 40..400 {
+        let Some(len) = u16_at(i).filter(|l| (3..=48).contains(l)) else { continue };
+        let Some(raw) = msg.get(i + 2..i + 2 + len) else { continue };
+        let Ok(name) = std::str::from_utf8(raw) else { continue };
+        if !valid_name(name) {
+            continue;
+        }
+        // The zone name follows shortly: that's what tells the name apart from other bytes.
+        let after = i + 2 + len;
+        let zone = (after..after + 16).find_map(|j| {
+            let zl = u16_at(j).filter(|l| (5..=64).contains(l))?;
+            let z = msg.get(j + 2..j + 2 + zl)?;
+            z.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_').then_some(j + 2 + zl)
+        });
+        let Some(zone_end) = zone else { continue };
+        let id = msg.get(zone_end + 17..zone_end + 21).map(le32).filter(|id| id >> 16 == 1);
+        let class = msg.get(after).and_then(|c| CLASSES.get(*c as usize)).copied();
+        return Some((name.to_string(), class, id));
+    }
+    None
 }
 
 pub fn is_cast(msg: &[u8]) -> bool {

@@ -73,6 +73,7 @@ fn main() {
         );
     }
     println!("focus: {:?}", live.focus_target.as_ref().map(|t| &t.name));
+    println!("player: {:?}", live.player);
     let snap = meter.snapshot(last_time + 1e9);
     println!(
         "\npackets={} game_messages={} entities={} me={:?}",

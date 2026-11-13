@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
-import { APP_NAME, Logo } from './brand'
-import { VersionAndUpdates } from './updater'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { api, useSavedFights, useSettings, useUpdate } from './api'
 import { CLASSES, DEFAULT_CLASS_COLORS, clock, fmt, fmtFull, fmtTime, pct } from './format'
 import { RANKS, type CaptureStatus, type DeviceInfo, type EncounterView, type Settings, type Update } from './types'
 import { AttackerTable } from './AttackerTable'
+import { TitleBar } from './TitleBar'
 import { HotkeyField } from './HotkeyField'
 import { HpBar } from './HpBar'
 import Layout from './Layout'
@@ -30,6 +29,7 @@ export default function MainApp() {
 
   return (
     <div className="flex h-full flex-col">
+      <TitleBar update={update} />
       <Header update={update} />
       <div className="flex min-h-0 flex-1">
         <nav className="w-40 shrink-0 border-r border-white/5 p-3">
@@ -84,11 +84,6 @@ function Header({ update }: { update: Update | null }) {
   const status = update?.status
   return (
     <header className="flex items-center gap-4 border-b border-white/5 px-5 py-3">
-      <div className="flex items-center gap-2.5">
-        <Logo className="h-7 w-7" />
-        <h1 className="text-base font-semibold tracking-tight">{APP_NAME}</h1>
-        <VersionAndUpdates />
-      </div>
       <StatusPill status={status} />
       {status?.running && status.deviceLabel && (
         <span className="truncate text-xs text-zinc-500">on {status.deviceLabel}</span>

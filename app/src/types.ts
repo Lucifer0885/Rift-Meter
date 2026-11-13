@@ -136,8 +136,16 @@ export interface TargetHpView {
 
 export const ELITE_RANKS = ['guardian', 'champion', 'leader', 'boss', 'worldboss']
 
+/** Your character, known outside fights too (zone load or your player record). */
+export interface PlayerView {
+  name: string | null
+  class: string | null
+  level: number | null
+}
+
 export interface Snapshot {
   me: number | null
+  player: PlayerView | null
   encounter: EncounterView | null
   focusTarget: TargetHpView | null
   trackedTargets: TargetHpView[]

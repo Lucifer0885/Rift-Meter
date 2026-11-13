@@ -30,7 +30,9 @@ for (const [kind, path] of Object.entries(installers)) {
 // Fallback for clients that don't say which installer they came from.
 platforms['windows-x86_64'] = platforms['windows-x86_64-nsis']
 
-const notes = process.argv[2] ?? `Riftmeter v${version}`
+// npm passes arguments through cmd.exe on Windows, which escapes them with ^: undo that.
+const arg = process.argv.slice(2).join(' ').replace(/\^(.)/g, '$1').replace(/\^$/, '').trim()
+const notes = arg || `Riftmeter v${version}`
 const out = { version, notes, pub_date: new Date().toISOString(), platforms }
 const dest = new URL('latest.json', bundle)
 writeFileSync(dest, JSON.stringify(out, null, 2) + '\n')

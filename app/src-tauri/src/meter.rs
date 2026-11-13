@@ -295,10 +295,20 @@ const ELITE_PRIORITY: u8 = 4; // guardian and up
 const TARGET_MEMORY: f64 = 120.0; // forget targets not hit for this long
 const MAX_TRACKED: usize = 8;
 
+/// Your character, shown at all times (not only in a fight).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PlayerView {
+    pub name: Option<String>,
+    pub class: Option<String>,
+    pub level: Option<u16>,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub me: Option<u32>,
+    pub player: Option<PlayerView>,
     pub encounter: Option<EncounterView>,
     /// The most important target hit recently (bosses first).
     pub focus_target: Option<TargetHpView>,
@@ -325,6 +335,10 @@ pub struct Meter {
     classes: HashMap<u32, (Option<&'static str>, Option<u16>)>, // player id -> class, level
     /// Your class from the skills you cast (for when no zone entry was captured).
     my_class: Option<&'static str>,
+    /// Your character's name, from the zone-load message.
+    my_name: Option<String>,
+    /// Your entity id, from the zone load or your own player-info record. Beats the votes.
+    me_known: Option<u32>,
     /// Your mercenary's name, once one of its spawns was seen. Kept across zones: the same
     /// mercenary comes back after each zone change, often spawned before we can see it.
     my_mercenary: Option<String>,
@@ -380,6 +394,8 @@ impl Meter {
             names: HashMap::new(),
             classes: HashMap::new(),
             my_class: None,
+            my_name: None,
+            me_known: None,
             my_mercenary: None,
             element_hits: HashMap::new(),
             last_cast: None,
@@ -402,6 +418,9 @@ impl Meter {
     }
 
     pub fn me(&self) -> Option<u32> {
+        if self.me_known.is_some() {
+            return self.me_known;
+        }
         let mut counts: HashMap<u32, usize> = HashMap::new();
         for v in &self.me_votes {
             *counts.entry(*v).or_default() += 1;
@@ -516,6 +535,11 @@ impl Meter {
         if element == "Lightning" && self.my_class == Some("Steam Mechanicus") {
             let explosion = self.box_explosions.iter().any(|b| (0.0..=BOX_LIGHTNING_WINDOW).contains(&(t - b)));
             return if explosion { "Dwarf in the Box".into() } else { MASTER_OF_LIGHTNING.into() };
+        }
+        // Master of Lightning's fields (Lightning Strike's, and the one when you're stunned): their
+        // ticks while the field aura is up, not the Lightning skill cast last.
+        if element == "Lightning" && self.marker_near(t, "Lightning") == Some(MASTER_OF_LIGHTNING) {
+            return MASTER_OF_LIGHTNING.into();
         }
         // With Master of Poison the box's explosion is a tagged DamageDonePoison record instead
         // of an area record; it still comes right after the explosion aura.
@@ -713,10 +737,43 @@ impl Meter {
         self.party_casts.clear();
         self.targets.clear();
         self.me_votes.clear();
+        self.me_known = None;
         self.pending_effects.clear();
     }
 
+    /// You entered a zone as `name` (decode::zone_load_player).
+    pub fn on_local_player(&mut self, name: String, class: Option<&'static str>, id: Option<u32>) {
+        if self.my_name.as_deref() != Some(name.as_str()) {
+            // Another character: what we learned from casts was about the old one.
+            self.my_class = None;
+        }
+        if class.is_some() {
+            self.my_class = class;
+        }
+        self.my_name = Some(name);
+        self.me_known = id;
+    }
+
+    /// Your character as far as we know it: name and class from the zone load and your player
+    /// record, else from combat. None until either (the UI asks you to change map).
+    pub fn player(&self) -> Option<PlayerView> {
+        let me = self.me();
+        let name = self.my_name.clone().or_else(|| me.and_then(|id| self.names.get(&id).cloned()));
+        let (class, level) = me.and_then(|id| self.classes.get(&id).copied()).unwrap_or((None, None));
+        let class = class.or(self.my_class);
+        if name.is_none() && class.is_none() {
+            return None;
+        }
+        Some(PlayerView { name, class: class.map(String::from), level })
+    }
+
     pub fn on_player(&mut self, p: PlayerInfo) {
+        if self.my_name.as_deref() == Some(p.name.as_str()) {
+            self.me_known = Some(p.id);
+            if p.class.is_some() {
+                self.my_class = p.class;
+            }
+        }
         self.names.insert(p.id, p.name);
         if p.class.is_some() {
             self.classes.insert(p.id, (p.class, p.level));
@@ -1193,6 +1250,7 @@ impl Meter {
             .cloned();
         Snapshot {
             me: self.me(),
+            player: self.player(),
             encounter: self.encounter.as_ref().map(|e| self.view(e, Some(now))),
             focus_target: focus,
             tracked_targets: tracked,

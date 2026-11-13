@@ -79,6 +79,16 @@ function ElementBar({
   );
 }
 
+/** Circular arrow: reset the fight. */
+function ResetIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13 8a5 5 0 1 1-1.5-3.6" />
+      <path d="M12 1.8v3h-3" />
+    </svg>
+  );
+}
+
 function LockIcon({ locked }: { locked: boolean }) {
   return (
     <svg
@@ -357,6 +367,7 @@ export default function Overlay() {
   };
 
   const enc = update?.snapshot.encounter;
+  const player = update?.snapshot.player;
   const attackers = enc?.attackers ?? [];
   const me = attackers.find((a) => a.isMe) ?? attackers[0];
   const party = !!o?.partyMode;
@@ -411,9 +422,34 @@ export default function Overlay() {
             {enc.killed ? " · boss down" : enc.over && " · over"}
           </span>
         )}
+        {player ? (
+          <span className="flex min-w-0 items-center gap-1 font-medium text-zinc-200">
+            {player.class && <ClassIcon cls={player.class} level={player.level} />}
+            <span className="truncate">{player.name ?? player.class}</span>
+          </span>
+        ) : (
+          update?.status.running && (
+            <span className="truncate font-normal text-zinc-500" title="Your character is read when a map loads">
+              Change map to find your character
+            </span>
+          )
+        )}
         <span className="tabular ml-auto text-[9px] font-normal text-zinc-500" title={`${APP_NAME} version`}>
           v{APP_VERSION}
         </span>
+        <button
+          type="button"
+          onMouseDown={noDrag}
+          onDoubleClick={noDrag}
+          onClick={(e) => {
+            e.stopPropagation();
+            api.resetMeter();
+          }}
+          title="Reset fight"
+          className="rounded p-0.5 text-zinc-500 transition-colors hover:text-zinc-200"
+        >
+          <ResetIcon />
+        </button>
         <button
           type="button"
           onMouseDown={noDrag}

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 export function Card({ title, children, right }: { title?: string; children: ReactNode; right?: ReactNode }) {
   return (
-    <section className="rounded-lg border border-white/5 bg-white/[0.03] p-4">
+    <section className="rounded-lg border border-white/5 bg-white/3 p-4">
       {(title || right) && (
         <div className="mb-3 flex items-center justify-between">
           {title && <h2 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">{title}</h2>}

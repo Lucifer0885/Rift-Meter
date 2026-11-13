@@ -12,6 +12,7 @@ node_modules/
 dist/
 app/src-tauri/target/
 app/src-tauri/gen/schemas/
+/release-notes/
 
 # Python
 __pycache__/
