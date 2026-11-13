@@ -1,6 +1,6 @@
 [package]
 name = "dso-dps-meter"
-version = "0.1.0"
+version = "0.5.18"
 description = "Passive DPS meter for Drakensang Online"
 license = "MIT"
 edition = "2024"
@@ -34,3 +34,5 @@ tauri-plugin-dialog = "2"
 regex = "1"
 libloading = "0.8"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2.14.1"
+tauri-plugin-process = "2.4.0"

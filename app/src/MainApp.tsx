@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { APP_NAME, APP_VERSION, Logo } from './brand'
+import { APP_NAME, Logo } from './brand'
+import { VersionAndUpdates } from './updater'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { api, useSavedFights, useSettings, useUpdate } from './api'
 import { CLASSES, DEFAULT_CLASS_COLORS, clock, fmt, fmtFull, fmtTime, pct } from './format'
@@ -86,9 +87,7 @@ function Header({ update }: { update: Update | null }) {
       <div className="flex items-center gap-2.5">
         <Logo className="h-7 w-7" />
         <h1 className="text-base font-semibold tracking-tight">{APP_NAME}</h1>
-        <span className="tabular rounded bg-white/5 px-1.5 py-0.5 text-[11px] text-zinc-500" title="App version">
-          v{APP_VERSION}
-        </span>
+        <VersionAndUpdates />
       </div>
       <StatusPill status={status} />
       {status?.running && status.deviceLabel && (

@@ -44,7 +44,8 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis"
+      "nsis",
+      "msi"
     ],
     "icon": [
       "icons/32x32.png",
@@ -52,6 +53,29 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true,
+    "publisher": "Lucifer0885",
+    "shortDescription": "Passive DPS meter for Drakensang Online",
+    "copyright": "Copyright (c) 2026 Lucifer0885. MIT License.",
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVCQTExOTU4RTMzOTM4QkQKUldTOU9EbmpXQm1oNjg3cFVtQVZpSFRNQ2hOcmlQdG96YzV1N3lwS21UaVdkZHVTdG0yZzRGS2IK",
+      "endpoints": [
+        "https://github.com/Lucifer0885/Rift-Meter/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -35,7 +35,8 @@ listens to traffic that is already arriving on your PC.
 ## Install
 
 1. Install [Npcap](https://npcap.com/#download). The default options are fine.
-2. Download the Riftmeter installer from the Releases page and run it.
+2. Download the installer from the [Releases page](https://github.com/Lucifer0885/Rift-Meter/releases)
+   and run it. Riftmeter updates itself from then on.
 3. Start Riftmeter, then the game. Capture starts by itself. If the status stays on "no game
    traffic", choose your network adapter in the **Capture** tab.
 
@@ -59,14 +60,15 @@ npm install
 npm run tauri dev
 ```
 
-Build the installer (NSIS), which ends up in `app/src-tauri/target/release/bundle/nsis/`:
+Build the installers (NSIS and MSI), which end up in `app/src-tauri/target/release/bundle/`:
 
 ```bash
 npm run tauri build
 ```
 
 The version number is set in `app/src-tauri/tauri.conf.json`, and the app shows it in the header
-and on the overlay.
+and on the overlay. [RELEASING.md](RELEASING.md) covers signing, publishing a release and the
+auto-updater.
 
 ## Project layout
 
