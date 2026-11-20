@@ -1,6 +1,6 @@
 //! Packets in, meter updates out.
 
-use crate::decode::{cast_skill, cast_tick, find_effect_hits, find_relayed_casts, find_hits, find_names, find_spawns, find_effect_markers, has_box_explosion, is_zone_load, zone_load_player};
+use crate::decode::{cast_skill, cast_tick, find_effect_hits, find_relayed_casts, find_hits, find_names, find_spawns, find_effect_markers, has_box_explosion, is_zone_load, zone_load_player, from_game_id};
 use crate::meter::Meter;
 use crate::packet::parse_udp;
 use crate::raknet::Reassembler;
@@ -27,7 +27,7 @@ impl Engine {
             self.game_messages += 1;
             if outgoing {
                 if let (Some(skill), Some(tick)) = (cast_skill(&msg), cast_tick(&msg)) {
-                    meter.on_cast(time, skill, tick);
+                    meter.on_cast(time, from_game_id(skill, time), tick);
                 }
             } else {
                 if is_zone_load(&msg) {
@@ -58,7 +58,7 @@ impl Engine {
                 for h in area.into_iter().chain(tagged) {
                     meter.on_hit(time, h);
                 }
-                for c in find_relayed_casts(&msg) {
+                for c in find_relayed_casts(&msg, time) {
                     meter.on_relayed_cast(time, c);
                 }
             }

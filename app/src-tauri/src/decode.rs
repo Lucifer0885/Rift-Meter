@@ -81,7 +81,7 @@ const PLAYER_INFO: u8 = 0x97;
 /// The same record for some characters, without the zone name (captures/2026-11-13_character_switch).
 const PLAYER_INFO_SHORT: u8 = 0xa7;
 
-/// Character names: letters, digits, `_`, `-` and spaces inside ("Saint LuсiфеЯ").
+/// Character names: letters, digits, `_`, `-` and spaces inside ("Dark Rider").
 fn valid_name(name: &str) -> bool {
     name.chars().count() >= 3
         && !name.starts_with(' ')
@@ -428,6 +428,10 @@ pub const EFFECT_MARKERS: &[(&[u8], &str, &str, f64)] = &[
     ),
     // Heavy Shot's explosion leaves a short burn.
     (b"skill_heavyshot_explosion", "Heavy Shot", "Fire", 0.4),
+    // Unleashed Dragon (Dragonknight, Fury of the Dragon talent): falling particles for 8 s. They
+    // come as untagged Physical area hits from you once a second, the last ~0.6 s after the last
+    // aura (captures/2026-11-12_dragonknight_passives).
+    (b"talent_warrior_skill_earthquake_rain", "Unleashed Dragon", "Physical", 1.5),
 ];
 
 /// Sources (see EFFECT_MARKERS) whose aura is in this message.
@@ -656,7 +660,7 @@ static RELAYED_CAST: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s-u)\xff[\x46-\x4b]\x00\x00\x00(..).{4}(..)\x00\x00").unwrap());
 const RELAY_SUB: u8 = 0x5f;
 
-pub fn find_relayed_casts(msg: &[u8]) -> Vec<RelayedCast> {
+pub fn find_relayed_casts(msg: &[u8], time: f64) -> Vec<RelayedCast> {
     let mut out: Vec<RelayedCast> = Vec::new();
     if msg.len() < 20
         || msg[0] != SERVER_BUNDLE
@@ -668,7 +672,7 @@ pub fn find_relayed_casts(msg: &[u8]) -> Vec<RelayedCast> {
     for k in 0..8 {
         let x = shifted(msg, k);
         for c in RELAYED_CAST.captures_iter(&x) {
-            let skill = u16::from_le_bytes([c[1][0], c[1][1]]);
+            let skill = from_game_id(u16::from_le_bytes([c[1][0], c[1][1]]), time);
             let tick = u16::from_le_bytes([c[2][0], c[2][1]]);
             let rc = RelayedCast { skill, tick };
             if SKILLS.iter().any(|s| s.0 == skill) && !out.contains(&rc) {
@@ -677,6 +681,25 @@ pub fn find_relayed_casts(msg: &[u8]) -> Vec<RelayedCast> {
         }
     }
     out
+}
+
+/// The game update of 2026-11 (between captures of 11-13 and 11-20) renumbered skill ids. The
+/// tables here keep the old numbers; casts sent after the update are translated back.
+/// Traffic before this time (all captures up to 2026-11-13) is left as it is.
+const SKILL_RENUMBER_TIME: f64 = 1_794_900_000.0; // 2026-11-17
+/// (first new id, last new id, new minus old). Every class's skills moved +0x20, confirmed:
+/// Spellweaver all 18 skills (captures/2026-11-20_mage_skill_ids.pcapng), Dragonknight all 15,
+/// Ranger 2 and Steam Mechanicus 4 (captures/2026-11-20_dk_skill_ids.pcapng).
+const SKILL_RENUMBER: [(u16, u16, u16); 1] = [
+    (0x074e, 0x079f, 0x20), // Dragonknight, Spellweaver, Ranger, Steam Mechanicus: was 0x072e..=0x077f
+];
+
+/// A skill id as the game sent it at `time`, in the numbering the tables use.
+pub fn from_game_id(id: u16, time: f64) -> u16 {
+    if time < SKILL_RENUMBER_TIME {
+        return id;
+    }
+    SKILL_RENUMBER.iter().find(|(lo, hi, _)| (*lo..=*hi).contains(&id)).map_or(id, |(_, _, d)| id - d)
 }
 
 /// "Spellweaver" / "Ranger" for a known skill id.

@@ -12,6 +12,7 @@ fn main() {
     let mut meter = Meter::new();
     let mut last_time = 0.0;
     let mut printed = 0u64;
+    let mut last_cast = 0.0;
     let dl = cap.datalink;
     loop {
         // A capture stopped mid-write ends in a truncated block: treat it as the end.
@@ -26,6 +27,10 @@ fn main() {
             Next::Packet { time, data } => {
                 engine.on_frame(&mut meter, dl, time, data);
                 last_time = time;
+                for (ct, name) in meter.cast_log().filter(|(ct, _)| *ct > last_cast).collect::<Vec<_>>() {
+                    println!("{ct:.2} CAST {name}");
+                    last_cast = ct;
+                }
                 let new = (meter.hits_seen - printed) as usize;
                 if new == 0 {
                     continue;
@@ -33,7 +38,7 @@ fn main() {
                 let snap = meter.snapshot(time);
                 for h in snap.recent_hits.iter().take(new).rev() {
                     println!(
-                        "{:.2} {} {:>12}  from {:08x} (owner {:08x}) -> {:08x}  {} [{}]",
+                        "{:.2} {} {:>12}  from {:08x} (owner {:08x}) -> {:08x}  {} [{}]  => {}",
                         h.time,
                         if h.crit { "CRIT" } else { "    " },
                         h.damage,
@@ -41,7 +46,8 @@ fn main() {
                         h.owner,
                         h.target,
                         h.target_name,
-                        h.target_rank
+                        h.target_rank,
+                        h.source
                     );
                 }
                 printed = meter.hits_seen;

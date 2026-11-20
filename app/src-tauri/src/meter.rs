@@ -31,6 +31,10 @@ const DK_SKILLS: std::ops::RangeInclusive<u16> = 0x072e..=0x073e;
 const MINE_SKILL: u16 = 0x0771;
 const BOMB_SKILL: u16 = 0x0772;
 const BOMB_WINDOW: f64 = 3.0;
+/// Bloody Wild Swing and Chimera Bloody Wild Swing: their Bleed ticks are untagged area hits from
+/// the caster, once a second for 5 s after the last hit (2026-11-12_dragonknight, 2026-11-20_dk_skill_ids).
+const BLEED_SKILLS: [u16; 2] = [0x0730, 0x0731];
+const BLEED_WINDOW: f64 = 6.0;
 /// Steam Conductor's second frost explosion comes 3 s after the cast.
 const STEAM_CONDUCTOR_WINDOW: f64 = 4.5;
 /// Turrets last 10 s (Mechanical Turret tooltip); with Master of Ice, Tactical Turret explodes when it disappears.
@@ -154,6 +158,15 @@ struct Encounter {
     killed: Option<(f64, String)>,
     /// Already handed out by `take_finished` (written to disk).
     saved: bool,
+    /// Set when the fight ends: who you were and the attackers' names and classes then. A zone
+    /// change forgets names, and old fights are shown again later.
+    frozen: Option<Frozen>,
+}
+
+#[derive(Clone)]
+struct Frozen {
+    me: Option<u32>,
+    labels: HashMap<u32, (String, Option<String>, Option<u16>)>,
 }
 
 impl Encounter {
@@ -243,6 +256,8 @@ pub struct HitView {
     pub target_name: String,
     pub target_rank: String,
     pub counted: bool,
+    /// The row it went to (empty if not counted). For the replay tool.
+    pub source: String,
 }
 
 /// HP state of one target, from the HP fields carried by every hit on it.
@@ -426,6 +441,11 @@ impl Meter {
             *counts.entry(*v).or_default() += 1;
         }
         counts.into_iter().max_by_key(|(id, c)| (*c, std::cmp::Reverse(*id))).map(|(id, _)| id)
+    }
+
+    /// Your recent casts (time, skill name), oldest first. For the replay tool.
+    pub fn cast_log(&self) -> impl Iterator<Item = (f64, String)> + '_ {
+        self.casts.iter().map(|(t, id)| (*t, skill_name(*id)))
     }
 
     pub fn on_cast(&mut self, t: f64, skill: u16, tick: u16) {
@@ -668,6 +688,9 @@ impl Meter {
         if self.box_exploded_before(t) {
             return "Dwarf in the Box".into();
         }
+        if let Some(src) = self.marker_near(t, "Physical") {
+            return src.into();
+        }
         let casts = if mine { Some(&self.casts) } else { self.party_casts.get(&owner) };
         // Bomb's explosion lands ~1.8 s after the cast, together with its Fire record. Explosive
         // Support's bombs look the same; whichever came last.
@@ -685,6 +708,9 @@ impl Meter {
         }
         if casts.is_some_and(|q| q.iter().any(|(ct, id)| *id == MINE_SKILL && *ct <= t && t - ct <= 60.0)) {
             return "Mine".into();
+        }
+        if let Some((_, id)) = casts.and_then(|q| q.iter().rev().find(|(ct, id)| BLEED_SKILLS.contains(id) && *ct <= t && t - ct <= BLEED_WINDOW)) {
+            return skill_name(*id);
         }
         AREA_SOURCE.into()
     }
@@ -751,7 +777,9 @@ impl Meter {
             self.my_class = class;
         }
         self.my_name = Some(name);
-        self.me_known = id;
+        // The id in the zone load is not your entity id since the 2026-11 update; your player
+        // record (on_player, matched by name) gives the real one.
+        let _ = id;
     }
 
     /// Your character as far as we know it: name and class from the zone load and your player
@@ -1020,6 +1048,7 @@ impl Meter {
             target_name: name.clone(),
             target_rank: rank.clone(),
             counted,
+            source: String::new(),
         });
         if self.recent.len() > RECENT_HITS {
             self.recent.pop_front();
@@ -1054,7 +1083,7 @@ impl Meter {
                 }
             }
             let assumed = me.and_then(|m| attackers.get(&m).cloned().map(|a| (m, a))).into_iter().collect();
-            self.encounter = Some(Encounter { start: t, last: t, attackers, assumed, targets: HashMap::new(), killed: None, saved: false });
+            self.encounter = Some(Encounter { start: t, last: t, attackers, assumed, targets: HashMap::new(), killed: None, saved: false, frozen: None });
         }
         if me == Some(who) && hit.attacker != hit.owner {
             if let Some(m) = self.entities.get(&hit.attacker).and_then(|(tpl, _)| mercenary_name(tpl)) {
@@ -1062,6 +1091,9 @@ impl Meter {
             }
         }
         let source = self.source_name(t, &hit, me == Some(who));
+        if let Some(r) = self.recent.back_mut() {
+            r.source = source.clone();
+        }
         // Direct hits: the element in the hit itself (masteries change a skill's element), else
         // the skill's own, else Physical. Effect records always carry their element.
         let element = hit
@@ -1092,7 +1124,17 @@ impl Meter {
     }
 
     fn finish(&mut self) {
-        if let Some(e) = self.encounter.take() {
+        if let Some(mut e) = self.encounter.take() {
+            let me = self.me();
+            let labels = e
+                .attackers
+                .keys()
+                .map(|id| {
+                    let (class, level) = self.player_class(*id, me == Some(*id));
+                    (*id, (self.player_name(*id), class, level))
+                })
+                .collect();
+            e.frozen = Some(Frozen { me, labels });
             if !e.saved && e.attackers.values().any(|a| a.total.hits > 0) {
                 self.unsaved.push(self.view(&e, None));
             }
@@ -1143,7 +1185,14 @@ impl Meter {
             _ => e.duration(),
         };
         let total: u64 = e.attackers.values().map(|a| a.total.damage).sum();
-        let me = self.me();
+        let me = e.frozen.as_ref().map_or_else(|| self.me(), |f| f.me);
+        let label = |id: u32| match e.frozen.as_ref().and_then(|f| f.labels.get(&id)) {
+            Some(l) => l.clone(),
+            None => {
+                let (class, level) = self.player_class(id, me == Some(id));
+                (self.player_name(id), class, level)
+            }
+        };
         let mut attackers: Vec<AttackerView> = e
             .attackers
             .iter()
@@ -1172,12 +1221,12 @@ impl Meter {
                     })
                     .collect();
                 sources.sort_by(|x, y| y.damage.cmp(&x.damage).then(y.casts.cmp(&x.casts)));
-                let (class, level) = self.player_class(*id, me == Some(*id));
+                let (name, class, level) = label(*id);
                 AttackerView {
                     class,
                     level,
                     id: *id,
-                    name: self.player_name(*id),
+                    name,
                     is_me: me == Some(*id),
                     damage: a.total.damage,
                     dps: a.total.damage as f64 / duration,
